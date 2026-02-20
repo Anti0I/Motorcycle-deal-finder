@@ -6,32 +6,27 @@ import requests
 import json
 from google import genai
 from playwright.sync_api import sync_playwright
-
-# ==========================================
-# KONFIGURACJA
-# ==========================================
 MONITORED_URLS = [
-    "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc",
-    "https://www.olx.pl/motoryzacja/motocykle-skutery/szosowo-turystyczny/?search%5Border%5D=created_at:desc",
-    "https://www.olx.pl/motoryzacja/motocykle-skutery/sportowy/?search%5Border%5D=created_at:desc",
-    "https://www.olx.pl/motoryzacja/motocykle-skutery/pozostale/?search%5Border%5D=created_at:desc"
+    ""
 ]
 
-WEBHOOK_URL = "TUTAJ_WKLEJ_SWOJ_WEBHOOK_DISCORD"
-GEMINI_API_KEY = "TUTAJ_WKLEJ_SWOJ_KLUCZ_GEMINI"
+WEBHOOK_URL = "" 
+GEMINI_API_KEY = ""
 
-INTERWAL_SPRAWDZANIA_MIN = 3  # Minimalny czas oczekiwania (w minutach)
-INTERWAL_SPRAWDZANIA_MAX = 3  # Maksymalny czas oczekiwania (w minutach)
-# ==========================================
+INTERWAL_SPRAWDZANIA_MIN = 3
+INTERWAL_SPRAWDZANIA_MAX = 3
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-def init_db():
+def init_db(clean_start=False):
     conn = sqlite3.connect('otomoto_listings.db')
     cursor = conn.cursor()
+    if clean_start:
+        cursor.execute('DROP TABLE IF EXISTS listings')
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS listings (
             id TEXT PRIMARY KEY
@@ -62,21 +57,28 @@ def save_listing(listing_id):
 def extract_from_otomoto(page):
     listings = []
     try:
-        page.wait_for_selector('article[data-id]', timeout=15000)
+        page.wait_for_selector('article[data-testid="listing-ad"], article[data-id]', timeout=15000)
     except Exception:
         logging.warning("Nie znaleziono ogłoszeń Otomoto w zadanym czasie. Możliwa kontrola antybotowa.")
         return listings
         
-    articles = page.locator('article[data-id]').all()
+    articles = page.locator('article[data-testid="listing-ad"], article[data-id]').all()
     for article in articles:
         try:
-            listing_id = article.get_attribute('data-id')
+            listing_id = article.get_attribute('data-id') or article.get_attribute('id')
             if not listing_id: continue
+            
+            # Weryfikacja czy oferta jest z dzisiaj
+            is_today = False
+            date_text = article.inner_text().lower()
+            if any(kw in date_text for kw in ["dzisiaj", "godzin", "minut", "sekund"]) and "wczoraj" not in date_text:
+                is_today = True
                 
-            title_elem = article.locator('h1 a, h2 a, h6 a').first
-            if title_elem.count() == 0: title_elem = article.locator('a').first
-            title = title_elem.inner_text().strip() if title_elem.count() > 0 else "Nieznany pojazd"
-            url = title_elem.get_attribute('href') if title_elem.count() > 0 else ""
+            title_elem = article.locator('h1 a, h2 a, h6 a, h2').first
+            title = title_elem.inner_text().strip() if title_elem.count() > 0 else "Nieznany pojazd (Otomoto)"
+            
+            url_elem = article.locator('a').first
+            url = url_elem.get_attribute('href') if url_elem.count() > 0 else ""
                 
             price_text = "Nieznana cena"
             for loc in [
@@ -94,76 +96,43 @@ def extract_from_otomoto(page):
             image_url = ""
             img_elem = article.locator('img').first
             if img_elem.count() > 0:
-                image_url = img_elem.get_attribute('src')
-                if not image_url or image_url.startswith('data:image'):
-                    try_lazy = img_elem.get_attribute('data-src')
-                    if try_lazy: image_url = try_lazy
+                image_url = img_elem.get_attribute('src') or img_elem.get_attribute('data-src') or ""
 
-            listings.append({'id': listing_id, 'title': title, 'price': price_text, 'url': url, 'image_url': image_url})
+            listings.append({
+                'id': listing_id, 'title': title, 'price': price_text, 
+                'url': url, 'image_url': image_url, 'is_today': is_today
+            })
         except Exception as e:
             logging.debug(f"Błąd parsowania elementu Otomoto: {e}")
     return listings
 
-def extract_from_olx(page):
-    listings = []
-    try:
-        page.wait_for_selector('div[data-cy="l-card"]', timeout=15000)
-    except Exception:
-        logging.warning("Nie znaleziono ogłoszeń OLX w zadanym czasie. Możliwa kontrola antybotowa.")
-        return listings
-        
-    cards = page.locator('div[data-cy="l-card"]').all()
-    for card in cards:
-        try:
-            anchor = card.locator('a').first
-            url = anchor.get_attribute('href') if anchor.count() > 0 else ""
-            if url and url.startswith('/'):
-                url = "https://www.olx.pl" + url
-            
-            # W OLX link ogłoszenia (lub jego ścieżka bez parametrów) to dobry unikalny ID
-            listing_id = url.split('#')[0].split('?')[0]
-            if not listing_id: continue
-            
-            title_elem = card.locator('h6').first
-            title = title_elem.inner_text().strip() if title_elem.count() > 0 else "Nieznany pojazd (OLX)"
-            
-            price_elem = card.locator('[data-testid="ad-price"]').first
-            price_text = price_elem.inner_text().strip() if price_elem.count() > 0 else "Nieznana cena"
-            
-            image_url = ""
-            img_elem = card.locator('img').first
-            if img_elem.count() > 0:
-                image_url = img_elem.get_attribute('src')
-                
-            listings.append({'id': listing_id, 'title': title, 'price': price_text, 'url': url, 'image_url': image_url})
-        except Exception as e:
-            logging.debug(f"Błąd parsowania elementu OLX: {e}")
-    return listings
-
 def check_bargain_gemini(title, price):
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "TUTAJ_WKLEJ_SWOJ_KLUCZ_GEMINI":
-        return False, "Brak skonfigurowanego klucza Gemini API. System oznaczania rynkowej ceny nie zadziałał."
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "TWÓJ_KLUCZ_GEMINI":
+        return "NORMAL DEAL", "Brak klucza Gemini API."
+        
+    if "Nieznany pojazd" in title:
+        return "NORMAL DEAL", "Nie można przeanalizować - brak tytułu z serwisu."
         
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         prompt = f"""
-        Jesteś ekspertem i analitykiem polskiego rynku motocyklowego. Przeanalizuj poniższe ogłoszenie, aby określić, czy to wyjątkowa okazja cenowa.
+        Jesteś ekspertem polskiego rynku motocyklowego. Oceń ofertę pod kątem profitu.
+        Tytuł: {title}
+        Cena: {price}
         
-        Dane ogłoszenia:
-        - Tytuł: {title}
-        - Cena: {price}
+        Kryteria oceny:
+        - BARGAIN: Cena po uwzględnieniu stanu jest o co najmniej 30% niższa od rynkowej.
+        - GREAT DEAL: Cena po uwzględnieniu stanu jest o co najmniej 15% niższa od rynkowej.
+        - NORMAL DEAL / BAD DEAL: Standardowe ceny lub za drogo.
+        - Motocykle uszkodzone: Zwróć uwagę na usterki. Oszacuj w pamięci potencjalny koszt naprawy i opłacalność na handel (flip).
+        - Rocznik motocykla jest ważny. Im starszy motocykl tym niższa cena.
+        - Marka i model motocykla jest ważny. Niektóre marki i modele są bardziej popularne i droższe od innych.
+        - Przebieg motocykla jest ważny. Im większy przebieg tym niższa cena.
         
-        Twoje zadanie:
-        1. Rozpoznaj z tytułu markę, model, rocznik, pojemność, przebieg oraz informacje o stanie (np. "uszkodzony", "po szlifie", "silnik stuka", "idealny", "igła").
-        2. Oszacuj przybliżoną średnią cenę rynkową dla tego modelu w Polsce (biorąc pod uwagę rocznik, jeśli jest w tytule).
-        3. Oblicz, o ile ta oferta jest tańsza (lub droższa) od rynkowej średniej.
-        4. Weź pod uwagę, że niska cena może wynikać z uszkodzeń wymienionych w tytule. Jeśli sprzęt jest mocno uszkodzony, to niska cena to norma, a nie "super okazja".
-        5. Oceń, czy relacja stanu do ceny sprawia, że jest to wybitnie opłacalny zakup (prawdziwa okazja do szybkiego zakupu/handlu).
-        
-        Zwróć wynik WŁĄCZNIE w czystym formacie JSON (bez znaczników markdown typu ```json) według schematu:
+        Zwróć wynik WŁĄCZNIE w czystym formacie JSON:
         {{
-            "is_bargain": true/false,
-            "analysis": "Twój szczegółowy werdykt w punktach. Wypisz: \\n• Szacowana cena rynkowa: (kwota) \\n• Stan/uszkodzenia wywnioskowane z tytułu: (opis) \\n• Przebieg: (jeśli podano) \\n• O ile taniej od średniej: (kwota) \\n• Werdykt opłacalności: (krótkie podsumowanie)"
+            "deal_type": "BAD DEAL | NORMAL DEAL | GREAT DEAL | BARGAIN",
+            "analysis": "MAKSYMALNIE 1-2 krótkie zdania."
         }}
         """
         
@@ -173,74 +142,58 @@ def check_bargain_gemini(title, price):
                     model='gemini-2.5-flash',
                     contents=prompt,
                 )
-                # Oczyszczanie odpowiedzi ze znaczników markdown, jeśli AI by je dodało
                 text = response.text.replace('```json', '').replace('```', '').strip()
                 data = json.loads(text)
-                return data.get("is_bargain", False), data.get("analysis", "Brak dokładnej analizy.")
+                
+                deal_type = data.get("deal_type", "NORMAL DEAL").upper()
+                if deal_type not in ["BAD DEAL", "NORMAL DEAL", "GREAT DEAL", "BARGAIN"]:
+                    deal_type = "NORMAL DEAL"
+                    
+                return deal_type, data.get("analysis", "Brak dokładnej analizy.")
             except Exception as api_err:
                 if '429' in str(api_err):
-                    logging.warning("Limit darmowego API Gemini wyczerpany (Zbyt dużo zapytań w minucie). Odczekuję 60 sekund przed ponowieniem...")
+                    logging.warning("Limit AI Gemini! Oczekiwanie 60 sekund...")
                     time.sleep(60)
                 else:
                     raise api_err
-                    
-        return False, "Nie udało się zweryfikować z powodu nałożonych limitów prędkości API."
-        
+        return "NORMAL DEAL", "Nie udało się zweryfikować przez limity API."
     except Exception as e:
-        logging.error(f"Zapytanie AI zwróciło błąd: {e}")
-        return False, f"Brak możliwości weryfikacji. Błąd API Gemini: {e}"
-def send_discord_notification(title, price, url, image_url, is_bargain=False, analysis=""):
-    if not WEBHOOK_URL or WEBHOOK_URL == "TUTAJ_WKLEJ_SWOJ_WEBHOOK_DISCORD":
-        logging.warning("Nie wysłano powiadomienia - webhook nie jest skonfigurowany!")
+        return "NORMAL DEAL", f"Błąd API Gemini: {e}"
+
+def send_discord_notification(title, price, url, image_url, deal_type="NORMAL DEAL", analysis=""):
+    if not WEBHOOK_URL or WEBHOOK_URL == "TWÓJ_WEBHOOK_DISCORD":
         return
 
+    colors = {
+        "GREAT DEAL": 0x2ECC71, # Zielony
+        "BARGAIN": 0xF1C40F     # Złoty
+    }
+    
     embed = {
-        "title": title[:256] if title else "Ogłoszenie pojazdu",
-        "color": 0xFF3333, # Czerwony kolor paska
+        "title": f"[{deal_type}] {title}"[:256],
+        "color": colors.get(deal_type, 0x2ECC71),
+        "description": f"**Cena:** {price}\n\n**Analiza pod profit:**\n{analysis}"[:4096]
     }
     
     if url and str(url).startswith('http'):
         embed["url"] = url
-    
-    if is_bargain:
-        embed["title"] = f"🚨 [OKAZJA / WAŻNE] {title}"[:256]
-        embed["color"] = 0x33FF33 # Zielony kolor paska dla weryfikacji
-        embed["description"] = f"**Cena:** {price}\n\n**Werdykt Sztucznej Inteligencji (Gemini Flash):**\n{analysis}"[:4096]
-    else:
-        # Standardowa nieokazyjna oferta / zablokowane API
-        embed["description"] = f"**Cena:** {price}"[:4096]
-        
     if image_url and str(image_url).startswith('http'):
         embed["thumbnail"] = {"url": image_url}
         
     data = {
-        "username": "Otomoto/OLX Monitor AI",
-        "avatar_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/13/Otomoto_logo_2021.svg/1024px-Otomoto_logo_2021.svg.png",
+        "username": "Monitor AI - OKAZJE",
         "embeds": [embed]
     }
-    
     try:
-        response = requests.post(WEBHOOK_URL, json=data)
-        if response.status_code >= 400:
-            logging.error(f"Błąd Discord (Code {response.status_code}): {response.text}")
-        response.raise_for_status()
+        requests.post(WEBHOOK_URL, json=data)
     except Exception as e:
-        logging.error(f"Błąd podczas wysyłania powiadomienia Discord: {e}")
+        logging.error(f"Błąd Discord: {e}")
 
 def main():
-    if not WEBHOOK_URL or WEBHOOK_URL == "TUTAJ_WKLEJ_SWOJ_WEBHOOK_DISCORD":
-        logging.warning("UWAGA: Nie skonfigurowano WEBHOOK_URL w skrypcie.")
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "TUTAJ_WKLEJ_SWOJ_KLUCZ_GEMINI":
-        logging.warning("UWAGA: Nie skonfigurowano GEMINI_API_KEY w skrypcie. Oceny rynkowe ofert nie będą działać!")
-        
-    logging.info("Inicjalizacja środowiska bazodanowego i start aplikacji...")
-    init_db()
+    init_db(clean_start=True)
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
+        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
@@ -251,71 +204,61 @@ def main():
         first_run = True
         while True:
             try:
-                # Otwarcie karty
                 page = context.new_page()
-                new_count = 0
                 
                 for target_url in MONITORED_URLS:
-                    logging.info(f"Sprawdzam źródło: {target_url.split('?')[0]} ...")
                     try:
                         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                        time.sleep(2) 
                         
-                        if "otomoto.pl" in target_url:
-                            listings = extract_from_otomoto(page)
-                        elif "olx.pl" in target_url:
-                            listings = extract_from_olx(page)
-                        else:
-                            listings = []
+                        listings = extract_from_otomoto(page)
                             
-                        # Sprawdzamy oferty
                         for listing in reversed(listings):
                             if is_listing_new(listing['id']):
+                                
+                                # Podczas pierwszego uruchomienia wrzucamy WSZYSTKO co jest na stronie do bazy i ignorujemy
                                 if first_run:
-                                    # Przy pierwszym uruchomieniu po prostu zapamiętujemy "stare" odnawiane ogłoszenia zastane na stronie
                                     save_listing(listing['id'])
-                                else:
-                                    new_count += 1
-                                    logging.info(f"Znaleziono nowe ogłoszenie: {listing['title']} - {listing['price']}")
-                                    
-                                    # Odpalenie Gemini tylko dla konkretnej nieznajomej oferty!
-                                    is_bargain, analysis = check_bargain_gemini(listing['title'], listing['price'])
-                                    if is_bargain:
-                                        logging.info("Oznaczono bieżące ogłoszenie jako OKAZJĘ rynkową!")
-                                        
+                                    continue
+                                
+                                # Dodatkowe zabezpieczenie: ignorujemy odświeżone stare oferty z wczoraj
+                                if not listing['is_today']:
+                                    logging.info(f"Pominięto starą ofertę: {listing['title']}")
+                                    save_listing(listing['id'])
+                                    continue
+
+                                # Weryfikacja tylko dla NOWYCH ofert po pierwszym skanie
+                                deal_type, analysis = check_bargain_gemini(listing['title'], listing['price'])
+                                
+                                if deal_type in ["GREAT DEAL", "BARGAIN"]:
+                                    logging.info(f"ZNALEZIONO OKAZJĘ! Wysyłam na Discord: {listing['title']} [{deal_type}] - {listing['price']}")
                                     send_discord_notification(
-                                        title=listing['title'],
-                                        price=listing['price'],
-                                        url=listing['url'],
-                                        image_url=listing['image_url'],
-                                        is_bargain=is_bargain,
-                                        analysis=analysis
+                                        title=listing['title'], price=listing['price'], 
+                                        url=listing['url'], image_url=listing['image_url'], 
+                                        deal_type=deal_type, analysis=analysis
                                     )
-                                    
-                                    save_listing(listing['id'])
-                                    time.sleep(1)
+                                else:
+                                    logging.info(f"Pominięto słabą ofertę: {listing['title']} [{deal_type}] - {listing['price']}")
+                                
+                                save_listing(listing['id'])
+                                time.sleep(5) 
                                 
                     except Exception as e:
-                        logging.error(f"Problem ze źródłem {target_url}: {e}")
+                        logging.error(f"Problem z pobraniem strony Otomoto: {e}")
                 
                 if first_run:
-                    logging.info("Początkowe skanowanie zakończone. Obecne oferty zostały zignorowane.")
+                    logging.info("Skan początkowy gotowy. Zignorowano obecne oferty. Od teraz skrypt analizuje NOWE wrzutki...")
                     first_run = False
                 
-                # Zamknięcie karty po spenetrowaniu całego stosu na to jedno przejście
                 page.close()
-                
-                if new_count == 0:
-                    logging.info("Brak nowych ogłoszeń w tym sprawdzeniu dla wszystkich serwisów.")
-                    
                 wait_seconds = random.randint(INTERWAL_SPRAWDZANIA_MIN * 60, INTERWAL_SPRAWDZANIA_MAX * 60)
-                logging.info(f"Usypiam robota. Kolejne sprawdzenie za ok. {wait_seconds // 60} minut i {wait_seconds % 60} sekund.")
                 time.sleep(wait_seconds)
                 
             except KeyboardInterrupt:
                 logging.info("Otrzymano wciśnięcie (Ctrl+C). Kończenie pracy programu.")
                 break
             except Exception as e:
-                logging.error(f"Niespodziewany błąd w pętli: {e}")
+                logging.error(f"Niespodziewany błąd pętli głównej: {e}")
                 time.sleep(60)
 
 if __name__ == "__main__":
