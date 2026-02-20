@@ -106,33 +106,96 @@ def extract_from_otomoto(page):
             logging.debug(f"Błąd parsowania elementu Otomoto: {e}")
     return listings
 
-def check_bargain_gemini(title, price):
+def extract_listing_details(context, url):
+    details = {"description": "", "parameters": ""}
+    if not url or not str(url).startswith('http'):
+        return details
+        
+    page = None
+    try:
+        page = context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(1) # Poczekaj na załadowanie skryptów (np. "pokaż więcej")
+        
+        # Pobieranie opisu
+        desc_locators = [
+            'div[data-cy="ad_description"]',
+            'div[data-testid="content-description-section"]',
+            '.offer-description__description'
+        ]
+        for loc in desc_locators:
+            elem = page.locator(loc).first
+            if elem.count() > 0:
+                details['description'] = elem.inner_text().strip()
+                break
+                
+        # Pobieranie parametrów (rocznik, przebieg, bezwypadkowość itp.)
+        param_locators = [
+            'div[data-testid="content-details-section"]',
+            'ul[data-testid="accordion-details-list"]',
+            '.offer-params'
+        ]
+        for loc in param_locators:
+            elem = page.locator(loc).first
+            if elem.count() > 0:
+                details['parameters'] = elem.inner_text().strip()
+                break
+                
+    except Exception as e:
+        logging.error(f"Błąd podczas pobierania detali ogłoszenia {url}: {e}")
+    finally:
+        if page:
+            try:
+                page.close()
+            except:
+                pass
+            
+    return details
+
+def check_bargain_gemini(title, price, url, details):
     if not GEMINI_API_KEY or GEMINI_API_KEY == "TWÓJ_KLUCZ_GEMINI":
         return "NORMAL DEAL", "Brak klucza Gemini API."
         
     if "Nieznany pojazd" in title:
         return "NORMAL DEAL", "Nie można przeanalizować - brak tytułu z serwisu."
         
+    desc_cropped = details['description'][:2500] if details['description'] else "Brak opisu"
+    params_cropped = details['parameters'][:1500] if details['parameters'] else "Brak parametrów"
+        
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         prompt = f"""
-        Jesteś ekspertem polskiego rynku motocyklowego. Oceń ofertę pod kątem profitu.
+        Jesteś wybitnym ekspertem polskiego rynku motocyklowego (Otomoto/OLX) oraz doświadczonym handlarzem (flipperem). 
+        Twoim zadaniem jest ocena opłacalności zakupu tego motocykla w celu dalszej odsprzedaży z zyskiem.
+        
+        DANE OGŁOSZENIA:
         Tytuł: {title}
         Cena: {price}
+        Link: {url}
         
-        Kryteria oceny:
-        - BARGAIN: Cena po uwzględnieniu stanu jest o co najmniej 30% niższa od rynkowej.
-        - GREAT DEAL: Cena po uwzględnieniu stanu jest o co najmniej 15% niższa od rynkowej.
-        - NORMAL DEAL / BAD DEAL: Standardowe ceny lub za drogo.
-        - Motocykle uszkodzone: Zwróć uwagę na usterki. Oszacuj w pamięci potencjalny koszt naprawy i opłacalność na handel (flip).
-        - Rocznik motocykla jest ważny. Im starszy motocykl tym niższa cena.
-        - Marka i model motocykla jest ważny. Niektóre marki i modele są bardziej popularne i droższe od innych.
-        - Przebieg motocykla jest ważny. Im większy przebieg tym niższa cena.
+        PARAMETRY MOTOCYKLA (rocznik, przebieg, stan itp.):
+        {params_cropped}
         
-        Zwróć wynik WŁĄCZNIE w czystym formacie JSON:
+        OPIS SPRZEDAJĄCEGO:
+        {desc_cropped}
+        
+        Instrukcje analizy:
+        1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ tego modelu w tym roczniku, z tym przebiegiem, wyposażeniem dodatkowym i w opisywanym stanie.
+        2. Zwróć szczególną uwagę na mankamenty (np. uszkodzony silnik, rysa, brak dokumentów, sprowadzony do opłat) o których wspomina sprzedający w opisie i odejmij szacunkowy koszt napraw/rejestracji od potencjalnego zysku.
+        3. Kategorie oceny:
+           - BARGAIN: Prawdziwa perełka. Cena po uwzględnieniu stanu/kosztów jest drastycznie zaniżona (co najmniej 30% poniżej realnej ceny rynkowej). Potężny potencjał na szybki i duży zysk dla handlarza.
+           - GREAT DEAL: Bardzo dobra oferta. Cena jest atrakcyjna i pozwala na pewny, niezły zarobek przy odsprzedaży (ok. 15-20% poniżej rynku, łatwe do upłynnienia).
+           - NORMAL DEAL: Cena rynkowa, standardowa. Niewielki potencjał na zarobek, raczej wymiana gotówki z niewielką marżą.
+           - BAD DEAL: Motocykl wyceniony za wysoko, ulep, skarbonka bez dna lub koszty napraw / wady znacząco przewyższają jakikolwiek sens zarobku. 
+
+        Odpowiedź wygeneruj TYLKO w czystym formacie JSON bez żadnych dopisków u góry ani na dole. 
+        Klucz 'analysis' to Twoja krótka, zwięzła i KONKRETNA analiza biznesowa (max 3-4 zdania). 
+        Przykład adnotacji: "Rynkowa cena dla '08 to ok. 25-27k. Przewrotka to koszt rzędu 2k (owiewka, set). Czysty zysk szacunkowo ok. 4-5k minimum."
+        
+        Oczekiwany JSON:
         {{
             "deal_type": "BAD DEAL | NORMAL DEAL | GREAT DEAL | BARGAIN",
-            "analysis": "MAKSYMALNIE 1-2 krótkie zdania."
+            "analysis": "Twoja analiza tutaj..."
         }}
         """
         
@@ -228,7 +291,12 @@ def main():
                                     continue
 
                                 # Weryfikacja tylko dla NOWYCH ofert po pierwszym skanie
-                                deal_type, analysis = check_bargain_gemini(listing['title'], listing['price'])
+                                logging.info(f"Pobieranie szczegółów nowej oferty: {listing['title']}")
+                                details = extract_listing_details(context, listing['url'])
+                                
+                                deal_type, analysis = check_bargain_gemini(
+                                    listing['title'], listing['price'], listing['url'], details
+                                )
                                 
                                 if deal_type in ["GREAT DEAL", "BARGAIN"]:
                                     logging.info(f"ZNALEZIONO OKAZJĘ! Wysyłam na Discord: {listing['title']} [{deal_type}] - {listing['price']}")
