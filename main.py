@@ -7,11 +7,11 @@ import json
 from google import genai
 from playwright.sync_api import sync_playwright
 MONITORED_URLS = [
-    ""
+    "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc"
 ]
 
-WEBHOOK_URL = "" 
-GEMINI_API_KEY = ""
+WEBHOOK_URL = "https://discord.com/api/webhooks/1474174418589716513/Hb33bdj9QnhgNAKHELNZWxlB62X9F_mAiaxIP09AxCMjiSbqiMDzysqw3yrsPm8SyOsF" 
+GEMINI_API_KEY = "AIzaSyA29IuJ92y_BuDL91YEiL7wrNbxdJzcLSw"
 
 INTERWAL_SPRAWDZANIA_MIN = 3
 INTERWAL_SPRAWDZANIA_MAX = 3
@@ -129,17 +129,54 @@ def extract_listing_details(context, url):
                 details['description'] = elem.inner_text().strip()
                 break
                 
-        # Pobieranie parametrów (rocznik, przebieg, bezwypadkowość itp.)
-        param_locators = [
-            'div[data-testid="content-details-section"]',
-            'ul[data-testid="accordion-details-list"]',
-            '.offer-params'
-        ]
-        for loc in param_locators:
-            elem = page.locator(loc).first
-            if elem.count() > 0:
-                details['parameters'] = elem.inner_text().strip()
-                break
+        # Pobieranie parametrów (rocznik, przebieg, moc, pojemność itp.)
+        technical_params = []
+        
+        # Próba pobrania ustrukturyzowanych parametrów (nowa metoda oparta na data-testid)
+        # Czekamy chwilę na załadowanie sekcji parametrów
+        try:
+            page.wait_for_selector('[data-testid="main-details-section"]', timeout=5000)
+        except:
+            pass
+            
+        detail_section = page.locator('[data-testid="main-details-section"]').first
+        if detail_section.count() > 0:
+            details_list = detail_section.locator('[data-testid="detail"]').all()
+            for d in details_list:
+                label = d.get_attribute('aria-label')
+                if label:
+                    technical_params.append(label)
+        
+        # Fallback: szukanie po klasach wymienionych wcześniej (ooa-1y1j4sq itp)
+        if not technical_params:
+            param_candidates = page.locator('[class*="ooa-1y1j4sq"], [class*="e1kkw2jt0"], .offer-params__item, ul[data-testid="accordion-details-list"] li').all()
+            for item in param_candidates:
+                try:
+                    text = item.inner_text().strip()
+                    if not text or len(text) > 150: continue
+                    if any(text in p for p in technical_params) or any(p in text for p in technical_params):
+                        continue
+                    keywords = ["Rok produkcji", "Przebieg", "Pojemność", "Moc", "Skrzynia", "Typ silnika", "Uszkodzony", "Bezwypadkowy"]
+                    if ":" in text or any(kw in text for kw in keywords):
+                        technical_params.append(text)
+                except:
+                    continue
+
+        if technical_params:
+            details['parameters'] = "\n".join(technical_params)
+        else:
+            # Fallback do starej metody (szukanie kontenerów)
+            param_locators = [
+                'div[data-testid="content-details-section"]',
+                'div[data-testid="content-details-section-wide"]',
+                'ul[data-testid="accordion-details-list"]',
+                '.offer-params'
+            ]
+            for loc in param_locators:
+                elem = page.locator(loc).first
+                if elem.count() > 0:
+                    details['parameters'] = elem.inner_text().strip()
+                    break
                 
     except Exception as e:
         logging.error(f"Błąd podczas pobierania detali ogłoszenia {url}: {e}")
@@ -180,7 +217,7 @@ def check_bargain_gemini(title, price, url, details):
         {desc_cropped}
         
         Instrukcje analizy:
-        1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ tego modelu w tym roczniku, z tym przebiegiem, wyposażeniem dodatkowym i w opisywanym stanie.
+        1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ tego modelu. Jako priorytet (fakty techniczne) traktuj DANE Z PARAMETRÓW (rocznik, moc, przebieg, pojemność), ponieważ opis może być generyczny.
         2. Zwróć szczególną uwagę na mankamenty (np. uszkodzony silnik, rysa, brak dokumentów, sprowadzony do opłat) o których wspomina sprzedający w opisie i odejmij szacunkowy koszt napraw/rejestracji od potencjalnego zysku.
         3. Kategorie oceny:
            - BARGAIN: Prawdziwa perełka. Cena po uwzględnieniu stanu/kosztów jest drastycznie zaniżona (co najmniej 30% poniżej realnej ceny rynkowej). Potężny potencjał na szybki i duży zysk dla handlarza.
@@ -190,7 +227,7 @@ def check_bargain_gemini(title, price, url, details):
 
         Odpowiedź wygeneruj TYLKO w czystym formacie JSON bez żadnych dopisków u góry ani na dole. 
         Klucz 'analysis' to Twoja krótka, zwięzła i KONKRETNA analiza biznesowa (max 3-4 zdania). 
-        Przykład adnotacji: "Rynkowa cena dla '08 to ok. 25-27k. Przewrotka to koszt rzędu 2k (owiewka, set). Czysty zysk szacunkowo ok. 4-5k minimum."
+        Upewnij się, że analysis zawiera odniesienie do rocznika i przebiegu z sekcji PARAMETRY.
         
         Oczekiwany JSON:
         {{
