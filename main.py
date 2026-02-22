@@ -10,8 +10,8 @@ MONITORED_URLS = [
     "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc"
 ]
 
-WEBHOOK_URL = "https://discord.com/api/webhooks/1474174418589716513/Hb33bdj9QnhgNAKHELNZWxlB62X9F_mAiaxIP09AxCMjiSbqiMDzysqw3yrsPm8SyOsF" 
-GEMINI_API_KEY = "AIzaSyA29IuJ92y_BuDL91YEiL7wrNbxdJzcLSw"
+WEBHOOK_URL = ""
+GEMINI_API_KEY = ""
 
 INTERWAL_SPRAWDZANIA_MIN = 3
 INTERWAL_SPRAWDZANIA_MAX = 3
@@ -239,7 +239,7 @@ def check_bargain_gemini(title, price, url, details):
         for attempt in range(3):
             try:
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-2.0-flash',
                     contents=prompt,
                 )
                 text = response.text.replace('```json', '').replace('```', '').strip()
@@ -255,9 +255,11 @@ def check_bargain_gemini(title, price, url, details):
                     logging.warning("Limit AI Gemini! Oczekiwanie 60 sekund...")
                     time.sleep(60)
                 else:
+                    logging.error(f"Błąd Gemini (próba {attempt+1}/3): {api_err}")
                     raise api_err
         return "NORMAL DEAL", "Nie udało się zweryfikować przez limity API."
     except Exception as e:
+        logging.error(f"Błąd API Gemini: {e}")
         return "NORMAL DEAL", f"Błąd API Gemini: {e}"
 
 def send_discord_notification(title, price, url, image_url, deal_type="NORMAL DEAL", analysis=""):
