@@ -10,8 +10,9 @@ MONITORED_URLS = [
     "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc"
 ]
 
-WEBHOOK_URL = ""
+WEBHOOK_URL = "" 
 GEMINI_API_KEY = ""
+
 
 INTERWAL_SPRAWDZANIA_MIN = 3
 INTERWAL_SPRAWDZANIA_MAX = 3
