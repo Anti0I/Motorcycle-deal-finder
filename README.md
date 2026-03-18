@@ -1,21 +1,16 @@
-````markdown
-# 🏍️ Motorcycle Deal Finder
+# Motorcycle Deal Finder
 
-> 🤖 AI-powered bot that finds **underpriced motorcycle listings** and sends the best deals to Discord.
-
----
-
-## ⚡ What Is This?
-
-Automated system that:
-- Monitors **Otomoto** listings
-- Extracts data (price, year, details)
-- Uses AI to evaluate profitability
-- Sends only **valuable deals** to Discord
+> AI-powered bot that finds underpriced motorcycle listings and sends the best deals to Discord.
 
 ---
 
-## 🛠️ Tech Stack
+## Overview
+
+Automated system that monitors **Otomoto** listings, extracts key data (price, year, details), uses AI to evaluate profitability, and sends only valuable deals to Discord.
+
+---
+
+## Tech Stack
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Playwright-2EAD33?style=for-the-badge&logo=microsoft&logoColor=white)
@@ -25,76 +20,64 @@ Automated system that:
 
 ---
 
-## 🧠 AI Model
+## AI Evaluation
 
-- Model: `gemini-2.5-flash`
-- Evaluates:
-  - market value
-  - condition
-  - profit potential
+**Model:** `gemini-2.5-flash`
 
-**Output:**
-- `BARGAIN`
-- `GREAT DEAL`
-- `NORMAL DEAL`
-- `BAD DEAL`
+Evaluates market value, condition, and profit potential.
 
----
+| Rating | Description |
+|--------|-------------|
+| **BARGAIN** | Significantly underpriced |
+| **GREAT DEAL** | Good value opportunity |
+| **NORMAL DEAL** | Fair market price |
+| **BAD DEAL** | Overpriced or poor condition |
 
-## 💾 Database
-
-- SQLite (`otomoto_listings.db`)
-- Stores listing IDs
-- Prevents duplicate processing
+Only **BARGAIN** and **GREAT DEAL** listings are sent to Discord.
 
 ---
 
-## 📩 Notifications
+## Database
 
-- Discord Webhook
-- Sends only:
-  - `GREAT DEAL`
-  - `BARGAIN`
-
-Includes:
-- title
-- price
-- year
-- AI analysis
-- image + link
+* **Engine:** SQLite (`otomoto_listings.db`)
+* **Purpose:** Stores listing IDs to prevent duplicate processing
 
 ---
 
-## ⚙️ How To Use
+## Notifications
+
+Discord webhook notifications include:
+* Listing title
+* Price & year
+* AI analysis summary
+* Image preview
+* Direct link to listing
+
+---
+
+## Installation
 
 ```bash
-git clone https://github.com/Anti0I/Motorcycle-deal-finder.git
+git clone [https://github.com/Anti0I/Motorcycle-deal-finder.git](https://github.com/Anti0I/Motorcycle-deal-finder.git)
 cd Motorcycle-deal-finder
 
 pip install -r requirements.txt
 playwright install
-````
+```
 
-Create `.env`:
-
-```env
+## Create .env
+```bash
 WEBHOOK_URL=your_discord_webhook
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-Run:
-
+## Run
 ```bash
 python main.py
 ```
 
----
-
-## 🔄 System Flow
-
-```
-Scrape → Filter new → Extract details → AI analysis → Send to Discord → Save to DB → Repeat
+## System Flow
+```bash
+Scrape → Filter New → Extract Details → AI Analysis → Send to Discord → Save to DB → Repeat
 ```
 
-```
-```
