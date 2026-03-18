@@ -2,20 +2,28 @@ import time
 import random
 import logging
 import sqlite3
-import requests
+import os
 import json
-from google import genai
+import requests
+import re
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+from google import genai
+from google.genai import types
+
+load_dotenv()
 MONITORED_URLS = [
     "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc"
 ]
 
-WEBHOOK_URL = "" 
-GEMINI_API_KEY = ""
+WEBHOOK_URL = "https://discord.com/api/webhooks/1475461755332333630/9RRZ-W7PpKptSdz401FwEnvKI4Y193BDk_fXg_E7BrUFx8c-u-F2WhXdUZqrWZpSo6Og"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+GEMINI_MODEL = "gemini-2.0-flash"
 
 INTERWAL_SPRAWDZANIA_MIN = 3
-INTERWAL_SPRAWDZANIA_MAX = 3
+INTERWAL_SPRAWDZANIA_MAX = 7
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +67,8 @@ def extract_from_otomoto(page):
     listings = []
     try:
         page.wait_for_selector('article[data-testid="listing-ad"], article[data-id]', timeout=15000)
+    except KeyboardInterrupt:
+        raise
     except Exception:
         logging.warning("Nie znaleziono ogłoszeń Otomoto w zadanym czasie. Możliwa kontrola antybotowa.")
         return listings
@@ -69,11 +79,13 @@ def extract_from_otomoto(page):
             listing_id = article.get_attribute('data-id') or article.get_attribute('id')
             if not listing_id: continue
             
-            # Weryfikacja czy oferta jest z dzisiaj
             is_today = False
-            date_text = article.inner_text().lower()
-            if any(kw in date_text for kw in ["dzisiaj", "godzin", "minut", "sekund"]) and "wczoraj" not in date_text:
-                is_today = True
+            lines = article.inner_text().lower().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith("dzisiaj") or "minut temu" in line or "godzin temu" in line or "sekund temu" in line:
+                    is_today = True
+                    break
                 
             title_elem = article.locator('h1 a, h2 a, h6 a, h2').first
             title = title_elem.inner_text().strip() if title_elem.count() > 0 else "Nieznany pojazd (Otomoto)"
@@ -94,6 +106,14 @@ def extract_from_otomoto(page):
                         price_text = p
                         break
             
+            year = "Nieznany rocznik"
+            labels_elem = article.locator('[data-testid="ad-labels"], [data-id="ad-labels"], .ad-labels').first
+            if labels_elem.count() > 0:
+                labels_text = labels_elem.inner_text().strip()
+                match = re.search(r'\b(19\d{2}|20[0-4]\d)\b', labels_text)
+                if match:
+                    year = match.group(1)
+            
             image_url = ""
             img_elem = article.locator('img').first
             if img_elem.count() > 0:
@@ -101,14 +121,17 @@ def extract_from_otomoto(page):
 
             listings.append({
                 'id': listing_id, 'title': title, 'price': price_text, 
-                'url': url, 'image_url': image_url, 'is_today': is_today
+                'url': url, 'image_url': image_url, 'is_today': is_today,
+                'year': year
             })
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             logging.debug(f"Błąd parsowania elementu Otomoto: {e}")
     return listings
 
 def extract_listing_details(context, url):
-    details = {"description": "", "parameters": ""}
+    details = {"description": "", "parameters": "", "highlights": ""}
     if not url or not str(url).startswith('http'):
         return details
         
@@ -116,9 +139,9 @@ def extract_listing_details(context, url):
     try:
         page = context.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(1) # Poczekaj na załadowanie skryptów (np. "pokaż więcej")
+        time.sleep(2) 
         
-        # Pobieranie opisu
+        # --- 1. Opis ---
         desc_locators = [
             'div[data-cy="ad_description"]',
             'div[data-testid="content-description-section"]',
@@ -129,15 +152,31 @@ def extract_listing_details(context, url):
             if elem.count() > 0:
                 details['description'] = elem.inner_text().strip()
                 break
-                
-        # Pobieranie parametrów (rocznik, przebieg, moc, pojemność itp.)
-        technical_params = []
         
-        # Próba pobrania ustrukturyzowanych parametrów (nowa metoda oparta na data-testid)
-        # Czekamy chwilę na załadowanie sekcji parametrów
+        # --- 2. Highlights ---
+        highlight_params = []
+        highlight_selectors = [
+            '[data-testid="content-highlight-details-section"]',
+            '[data-testid="highlight-details-section"]',
+        ]
+        for sel in highlight_selectors:
+            highlight_section = page.locator(sel).first
+            if highlight_section.count() > 0:
+                highlight_text = highlight_section.inner_text().strip()
+                if highlight_text:
+                    highlight_params.append(highlight_text)
+                break 
+        
+        if highlight_params:
+            details['highlights'] = "\n".join(highlight_params)
+        
+        # --- 3. Main Details ---
+        technical_params = []
         try:
             page.wait_for_selector('[data-testid="main-details-section"]', timeout=5000)
-        except:
+        except KeyboardInterrupt:
+            raise
+        except Exception:
             pass
             
         detail_section = page.locator('[data-testid="main-details-section"]').first
@@ -147,29 +186,76 @@ def extract_listing_details(context, url):
                 label = d.get_attribute('aria-label')
                 if label:
                     technical_params.append(label)
+                else:
+                    txt = d.inner_text().strip()
+                    if txt and len(txt) < 200:
+                        technical_params.append(txt)
         
-        # Fallback: szukanie po klasach wymienionych wcześniej (ooa-1y1j4sq itp)
-        if not technical_params:
-            param_candidates = page.locator('[class*="ooa-1y1j4sq"], [class*="e1kkw2jt0"], .offer-params__item, ul[data-testid="accordion-details-list"] li').all()
+        # --- 4. Extra params ---
+        extra_params = []
+        extra_selectors = [
+            'div[data-testid="content-details-section"]',
+            'div[data-testid="content-details-section-wide"]',
+        ]
+        for sel in extra_selectors:
+            extra_section = page.locator(sel).first
+            if extra_section.count() > 0:
+                extra_text = extra_section.inner_text().strip()
+                if extra_text:
+                    extra_params.append(extra_text)
+                break
+
+        # --- 5. Combined details and equipment ---
+        combined_selectors = [
+            '[data-testid="combined-details-and-equipment-section"]',
+            '#combined-details-and-equipment-section',
+            '.combined-details-and-equipment-section'
+        ]
+        for sel in combined_selectors:
+            combined_section = page.locator(sel).first
+            if combined_section.count() > 0:
+                combined_text = combined_section.inner_text().strip()
+                if combined_text:
+                    extra_params.append("--- SZCZEGÓŁY I WYPOSAŻENIE ---")
+                    extra_params.append(combined_text)
+                break
+        
+        # --- 6. Fallback (keywords) ---
+        if not technical_params and not highlight_params:
+            param_candidates = page.locator(
+                '[class*="ooa-1y1j4sq"], [class*="e1kkw2jt0"], '
+                '.offer-params__item, '
+                'ul[data-testid="accordion-details-list"] li'
+            ).all()
             for item in param_candidates:
                 try:
                     text = item.inner_text().strip()
-                    if not text or len(text) > 150: continue
+                    if not text or len(text) > 150:
+                        continue
                     if any(text in p for p in technical_params) or any(p in text for p in technical_params):
                         continue
-                    keywords = ["Rok produkcji", "Przebieg", "Pojemność", "Moc", "Skrzynia", "Typ silnika", "Uszkodzony", "Bezwypadkowy"]
+                    keywords = [
+                        "Rok produkcji", "Przebieg", "Pojemność", "Moc",
+                        "Skrzynia", "Typ silnika", "Uszkodzony", "Bezwypadkowy",
+                        "Stan", "Model", "Marka"
+                    ]
                     if ":" in text or any(kw in text for kw in keywords):
                         technical_params.append(text)
-                except:
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
                     continue
 
+        all_params = []
         if technical_params:
-            details['parameters'] = "\n".join(technical_params)
+            all_params.extend(technical_params)
+        if extra_params:
+            all_params.extend(extra_params)
+            
+        if all_params:
+            details['parameters'] = "\n".join(all_params)
         else:
-            # Fallback do starej metody (szukanie kontenerów)
             param_locators = [
-                'div[data-testid="content-details-section"]',
-                'div[data-testid="content-details-section-wide"]',
                 'ul[data-testid="accordion-details-list"]',
                 '.offer-params'
             ]
@@ -178,11 +264,17 @@ def extract_listing_details(context, url):
                 if elem.count() > 0:
                     details['parameters'] = elem.inner_text().strip()
                     break
+        
+        logging.info(f"Pobrano szczegóły - Opis: {len(details['description'])} zn., "
+                     f"Highlights: {len(details['highlights'])} zn., "
+                     f"Parametry: {len(details['parameters'])} zn.")
                 
+    except KeyboardInterrupt:
+        raise
     except Exception as e:
         logging.error(f"Błąd podczas pobierania detali ogłoszenia {url}: {e}")
     finally:
-        if page:
+        if page and not page.is_closed():
             try:
                 page.close()
             except:
@@ -190,92 +282,101 @@ def extract_listing_details(context, url):
             
     return details
 
-def check_bargain_gemini(title, price, url, details):
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "TWÓJ_KLUCZ_GEMINI":
-        return "NORMAL DEAL", "Brak klucza Gemini API."
-        
+def check_bargain_gemini(title, price, year, url, details):
+    if not client:
+        return "NORMAL DEAL", "Brak klucza GEMINI_API_KEY."
+
     if "Nieznany pojazd" in title:
         return "NORMAL DEAL", "Nie można przeanalizować - brak tytułu z serwisu."
-        
+
     desc_cropped = details['description'][:2500] if details['description'] else "Brak opisu"
-    params_cropped = details['parameters'][:1500] if details['parameters'] else "Brak parametrów"
-        
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        prompt = f"""
-        Jesteś wybitnym ekspertem polskiego rynku motocyklowego (Otomoto/OLX) oraz doświadczonym handlarzem (flipperem). 
-        Twoim zadaniem jest ocena opłacalności zakupu tego motocykla w celu dalszej odsprzedaży z zyskiem.
-        
-        DANE OGŁOSZENIA:
-        Tytuł: {title}
-        Cena: {price}
-        Link: {url}
-        
-        PARAMETRY MOTOCYKLA (rocznik, przebieg, stan itp.):
-        {params_cropped}
-        
-        OPIS SPRZEDAJĄCEGO:
-        {desc_cropped}
-        
-        Instrukcje analizy:
-        1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ tego modelu. Jako priorytet (fakty techniczne) traktuj DANE Z PARAMETRÓW (rocznik, moc, przebieg, pojemność), ponieważ opis może być generyczny.
-        2. Zwróć szczególną uwagę na mankamenty (np. uszkodzony silnik, rysa, brak dokumentów, sprowadzony do opłat) o których wspomina sprzedający w opisie i odejmij szacunkowy koszt napraw/rejestracji od potencjalnego zysku.
-        3. Kategorie oceny:
-           - BARGAIN: Prawdziwa perełka. Cena po uwzględnieniu stanu/kosztów jest drastycznie zaniżona (co najmniej 30% poniżej realnej ceny rynkowej). Potężny potencjał na szybki i duży zysk dla handlarza.
-           - GREAT DEAL: Bardzo dobra oferta. Cena jest atrakcyjna i pozwala na pewny, niezły zarobek przy odsprzedaży (ok. 15-20% poniżej rynku, łatwe do upłynnienia).
-           - NORMAL DEAL: Cena rynkowa, standardowa. Niewielki potencjał na zarobek, raczej wymiana gotówki z niewielką marżą.
-           - BAD DEAL: Motocykl wyceniony za wysoko, ulep, skarbonka bez dna lub koszty napraw / wady znacząco przewyższają jakikolwiek sens zarobku. 
+    params_cropped = details['parameters'][:2500] if details['parameters'] else "Brak parametrów"
+    highlights_cropped = details.get('highlights', '')[:1000] if details.get('highlights') else "Brak wyróżnionych parametrów"
 
-        Odpowiedź wygeneruj TYLKO w czystym formacie JSON bez żadnych dopisków u góry ani na dole. 
-        Klucz 'analysis' to Twoja krótka, zwięzła i KONKRETNA analiza biznesowa (max 3-4 zdania). 
-        Upewnij się, że analysis zawiera odniesienie do rocznika i przebiegu z sekcji PARAMETRY.
-        
-        Oczekiwany JSON:
-        {{
-            "deal_type": "BAD DEAL | NORMAL DEAL | GREAT DEAL | BARGAIN",
-            "analysis": "Twoja analiza tutaj..."
-        }}
-        """
-        
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model='gemini-2.0-flash',
-                    contents=prompt,
+    prompt = f"""
+    Jesteś wybitnym ekspertem polskiego rynku motocyklowego (Otomoto/OLX) oraz doświadczonym handlarzem (flipperem).
+    Twoim zadaniem jest ocena opłacalności zakupu tego motocykla w celu dalszej odsprzedaży z zyskiem.
+
+    DANE OGŁOSZENIA:
+    Tytuł: {title}
+    Rocznik pojazdu: {year}
+    Cena: {price}
+    Link: {url}
+
+    NAJWAŻNIEJSZE PARAMETRY (HIGHLIGHT):
+    {highlights_cropped}
+
+    SZCZEGÓŁOWE PARAMETRY I WYPOSAŻENIE MOTOCYKLA:
+    {params_cropped}
+
+    OPIS SPRZEDAJĄCEGO:
+    {desc_cropped}
+
+    Instrukcje analizy:
+    1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ tego modelu. Jako priorytet traktuj DANE Z PARAMETRÓW, SZCZEGÓLNIE PRZEKAZANY ROCZNIK:
+       - ROK PRODUKCJI: {year}
+       - PRZEBIEG (ile km przejechał)
+       - POJEMNOŚĆ SILNIKA (cm³)
+       - MOC (KM/kW)
+       - MODEL motocykla (marka i model)
+       - CZY JEST USZKODZONY (uszkodzony/bezwypadkowy/stan)
+    2. Zwróć szczególną uwagę na mankamenty (np. uszkodzony silnik, rysa, brak dokumentów, sprowadzony do opłat).
+    3. Kategorie oceny:
+       - BARGAIN: Prawdziwa perełka. Cena drastycznie zaniżona (co najmniej 30% poniżej rynku). Potężny potencjał zysku.
+       - GREAT DEAL: Bardzo dobra oferta. Cena ok. 15-20% poniżej rynku, łatwe do upłynnienia.
+       - NORMAL DEAL: Cena rynkowa. Niewielki potencjał zarobku.
+       - BAD DEAL: Motocykl za drogi lub koszty napraw przewyższają sens zakupu.
+
+    Odpowiedz w formacie JSON z polami "deal_type" oraz "analysis".
+    """
+
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
                 )
-                text = response.text.replace('```json', '').replace('```', '').strip()
-                data = json.loads(text)
-                
-                deal_type = data.get("deal_type", "NORMAL DEAL").upper()
-                if deal_type not in ["BAD DEAL", "NORMAL DEAL", "GREAT DEAL", "BARGAIN"]:
-                    deal_type = "NORMAL DEAL"
-                    
-                return deal_type, data.get("analysis", "Brak dokładnej analizy.")
-            except Exception as api_err:
-                if '429' in str(api_err):
-                    logging.warning("Limit AI Gemini! Oczekiwanie 60 sekund...")
-                    time.sleep(60)
-                else:
-                    logging.error(f"Błąd Gemini (próba {attempt+1}/3): {api_err}")
-                    raise api_err
-        return "NORMAL DEAL", "Nie udało się zweryfikować przez limity API."
-    except Exception as e:
-        logging.error(f"Błąd API Gemini: {e}")
-        return "NORMAL DEAL", f"Błąd API Gemini: {e}"
+            )
+            text = response.text.strip()
+            data = json.loads(text)
 
-def send_discord_notification(title, price, url, image_url, deal_type="NORMAL DEAL", analysis=""):
+            deal_type = data.get("deal_type", "NORMAL DEAL").upper()
+            if deal_type not in ["BAD DEAL", "NORMAL DEAL", "GREAT DEAL", "BARGAIN"]:
+                deal_type = "NORMAL DEAL"
+
+            return deal_type, data.get("analysis", "Brak dokładnej analizy.")
+
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "Resource" in error_str:
+                wait = 30 * (attempt + 1)
+                logging.warning(f"Limit Gemini API! Oczekiwanie {wait}s... (próba {attempt+1}/3)")
+                time.sleep(wait)
+            else:
+                logging.error(f"Błąd Gemini API (próba {attempt+1}/3): {e}")
+                time.sleep(5)
+
+    return "NORMAL DEAL", "Nie udało się zweryfikować przez AI."
+
+def send_discord_notification(title, price, year, url, image_url, deal_type="NORMAL DEAL", analysis=""):
     if not WEBHOOK_URL or WEBHOOK_URL == "TWÓJ_WEBHOOK_DISCORD":
         return
 
     colors = {
-        "GREAT DEAL": 0x2ECC71, # Zielony
-        "BARGAIN": 0xF1C40F     # Złoty
+        "GREAT DEAL": 0x2ECC71, 
+        "BARGAIN": 0xF1C40F     
     }
     
+    display_title = f"[{deal_type}] {title} ({year})"[:256]
+    
     embed = {
-        "title": f"[{deal_type}] {title}"[:256],
+        "title": display_title,
         "color": colors.get(deal_type, 0x2ECC71),
-        "description": f"**Cena:** {price}\n\n**Analiza pod profit:**\n{analysis}"[:4096]
+        "description": f"**Cena:** {price}\n**Rocznik:** {year}\n\n**Analiza pod profit:**\n{analysis}"[:4096]
     }
     
     if url and str(url).startswith('http'):
@@ -306,6 +407,7 @@ def main():
 
         first_run = True
         while True:
+            page = None
             try:
                 page = context.new_page()
                 
@@ -319,29 +421,26 @@ def main():
                         for listing in reversed(listings):
                             if is_listing_new(listing['id']):
                                 
-                                # Podczas pierwszego uruchomienia wrzucamy WSZYSTKO co jest na stronie do bazy i ignorujemy
                                 if first_run:
                                     save_listing(listing['id'])
                                     continue
                                 
-                                # Dodatkowe zabezpieczenie: ignorujemy odświeżone stare oferty z wczoraj
                                 if not listing['is_today']:
                                     logging.info(f"Pominięto starą ofertę: {listing['title']}")
                                     save_listing(listing['id'])
                                     continue
 
-                                # Weryfikacja tylko dla NOWYCH ofert po pierwszym skanie
-                                logging.info(f"Pobieranie szczegółów nowej oferty: {listing['title']}")
+                                logging.info(f"Pobieranie szczegółów nowej oferty: {listing['title']} (Rocznik: {listing['year']})")
                                 details = extract_listing_details(context, listing['url'])
                                 
                                 deal_type, analysis = check_bargain_gemini(
-                                    listing['title'], listing['price'], listing['url'], details
+                                    listing['title'], listing['price'], listing['year'], listing['url'], details
                                 )
                                 
                                 if deal_type in ["GREAT DEAL", "BARGAIN"]:
                                     logging.info(f"ZNALEZIONO OKAZJĘ! Wysyłam na Discord: {listing['title']} [{deal_type}] - {listing['price']}")
                                     send_discord_notification(
-                                        title=listing['title'], price=listing['price'], 
+                                        title=listing['title'], price=listing['price'], year=listing['year'],
                                         url=listing['url'], image_url=listing['image_url'], 
                                         deal_type=deal_type, analysis=analysis
                                     )
@@ -351,6 +450,8 @@ def main():
                                 save_listing(listing['id'])
                                 time.sleep(5) 
                                 
+                    except KeyboardInterrupt:
+                        raise
                     except Exception as e:
                         logging.error(f"Problem z pobraniem strony Otomoto: {e}")
                 
@@ -358,8 +459,8 @@ def main():
                     logging.info("Skan początkowy gotowy. Zignorowano obecne oferty. Od teraz skrypt analizuje NOWE wrzutki...")
                     first_run = False
                 
-                page.close()
                 wait_seconds = random.randint(INTERWAL_SPRAWDZANIA_MIN * 60, INTERWAL_SPRAWDZANIA_MAX * 60)
+                logging.info(f"Oczekiwanie {wait_seconds // 60} minut i {wait_seconds % 60} sekund do kolejnego sprawdzenia...")
                 time.sleep(wait_seconds)
                 
             except KeyboardInterrupt:
@@ -368,6 +469,12 @@ def main():
             except Exception as e:
                 logging.error(f"Niespodziewany błąd pętli głównej: {e}")
                 time.sleep(60)
+            finally:
+                if page and not page.is_closed():
+                    try:
+                        page.close()
+                    except:
+                        pass
 
 if __name__ == "__main__":
     main()
