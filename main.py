@@ -16,11 +16,11 @@ MONITORED_URLS = [
     "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc"
 ]
 
-WEBHOOK_URL = "https://discord.com/api/webhooks/1475461755332333630/9RRZ-W7PpKptSdz401FwEnvKI4Y193BDk_fXg_E7BrUFx8c-u-F2WhXdUZqrWZpSo6Og"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 INTERWAL_SPRAWDZANIA_MIN = 3
 INTERWAL_SPRAWDZANIA_MAX = 7
