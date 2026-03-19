@@ -37,8 +37,8 @@ def check_bargain_gemini(title, price, year, url, details):
     {desc_cropped}
 
     Instrukcje analizy:
-    1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ tego modelu. Jako priorytet traktuj DANE Z PARAMETRÓW, SZCZEGÓLNIE PRZEKAZANY ROCZNIK:
-       - ROK PRODUKCJI: {year}
+    1. Oceń REALNĄ WARTOŚĆ RYNKOWĄ na podstawie parametrów (rocznik: {year}, przebieg, pojemność, moc, stan).
+    2.  - ROK PRODUKCJI: {year}
        - PRZEBIEG (ile km przejechał)
        - POJEMNOŚĆ SILNIKA (cm³)
        - MOC (KM/kW)
@@ -46,10 +46,14 @@ def check_bargain_gemini(title, price, year, url, details):
        - CZY JEST USZKODZONY (uszkodzony/bezwypadkowy/stan)
     2. Zwróć szczególną uwagę na mankamenty (np. uszkodzony silnik, rysa, brak dokumentów, sprowadzony do opłat).
     3. Kategorie oceny:
-       - BARGAIN: Prawdziwa perełka. Cena drastycznie zaniżona (co najmniej 30% poniżej rynku). Potężny potencjał zysku.
-       - GREAT DEAL: Bardzo dobra oferta. Cena ok. 15-20% poniżej rynku, łatwe do upłynnienia.
-       - NORMAL DEAL: Cena rynkowa. Niewielki potencjał zarobku.
-       - BAD DEAL: Motocykl za drogi lub koszty napraw przewyższają sens zakupu.
+       - BARGAIN: Cena 30%+ poniżej rynku. Potężny potencjał zysku.
+       - GREAT DEAL: Cena 15-20% poniżej rynku.
+       - NORMAL DEAL: Cena rynkowa.
+       - BAD DEAL: Za drogi lub koszty napraw przewyższają sens zakupu.
+
+    WAŻNE: Pole "analysis" MUSI mieć MAKSYMALNIE 6 krótkich zdań. Napisz zwięźle:
+    model/rocznik/przebieg, wartość rynkowa vs cena, ewentualne ryzyka, werdykt.
+    Bez rozpisywania się. Krótko i na temat.
 
     Odpowiedz w formacie JSON z polami "deal_type" oraz "analysis".
     """
