@@ -7,7 +7,7 @@ load_dotenv()
 
 # --- URLs do monitorowania ---
 MONITORED_URLS = [
-    "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=125&search%5Border%5D=created_at_first%3Adesc"
+    "https://www.otomoto.pl/motocykle-i-quady/sportowy--typ-naked?search%5Bfilter_float_engine_capacity%3Afrom%5D=300&search%5Bfilter_float_engine_capacity%3Ato%5D=1500&search%5Bfilter_float_mileage%3Afrom%5D=5000&search%5Bfilter_float_mileage%3Ato%5D=50000&search%5Border%5D=created_at_first%3Adesc"
 ]
 
 # --- Klucze i webhooki ---

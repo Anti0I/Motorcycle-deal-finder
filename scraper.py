@@ -22,12 +22,17 @@ def extract_from_otomoto(page):
                 continue
 
             is_today = False
-            lines = article.inner_text().lower().split('\n')
-            for line in lines:
-                line = line.strip()
-                if line.startswith("dzisiaj") or "minut temu" in line or "godzin temu" in line or "sekund temu" in line:
-                    is_today = True
-                    break
+            article_text = article.inner_text().lower()
+            # Regex obsługuje wszystkie polskie formy odmiany:
+            # minuta/minuty/minut temu, godzina/godziny/godzin temu, sekunda/sekundy/sekund temu
+            if re.search(
+                r'dzisiaj|'
+                r'\d+\s+minut[ay]?\s+temu|'
+                r'\d+\s+godzin[ya]?\s+temu|'
+                r'\d+\s+sekund[ay]?\s+temu',
+                article_text
+            ):
+                is_today = True
 
             title_elem = article.locator('h1 a, h2 a, h6 a, h2').first
             title = title_elem.inner_text().strip() if title_elem.count() > 0 else "Nieznany pojazd (Otomoto)"
