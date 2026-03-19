@@ -1,15 +1,12 @@
 import json
 import time
 import logging
-from google.genai import types
-from config import client, GEMINI_MODEL
+import requests
+from config import OLLAMA_URL, OLLAMA_MODEL
 
 
 def check_bargain_gemini(title, price, year, url, details):
-    """Ocenia opłacalność ogłoszenia przy użyciu Gemini API."""
-    if not client:
-        return "NORMAL DEAL", "Brak klucza GEMINI_API_KEY."
-
+    """Ocenia opłacalność ogłoszenia przy użyciu lokalnego modelu Ollama."""
     if "Nieznany pojazd" in title:
         return "NORMAL DEAL", "Nie można przeanalizować - brak tytułu z serwisu."
 
@@ -51,19 +48,26 @@ def check_bargain_gemini(title, price, year, url, details):
        - NORMAL DEAL: Cena rynkowa. Niewielki potencjał zarobku.
        - BAD DEAL: Motocykl za drogi lub koszty napraw przewyższają sens zakupu.
 
-    Odpowiedz w formacie JSON z polami "deal_type" oraz "analysis".
+    MUSISZ odpowiedzieć WYŁĄCZNIE poprawnym JSON-em (bez żadnego dodatkowego tekstu, komentarzy ani markdown) z dwoma polami:
+    {{"deal_type": "...", "analysis": "..."}}
     """
 
     for attempt in range(3):
         try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                )
+            response = requests.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                },
+                timeout=120,
             )
-            text = response.text.strip()
+            response.raise_for_status()
+
+            result = response.json()
+            text = result.get("response", "").strip()
             data = json.loads(text)
 
             deal_type = data.get("deal_type", "NORMAL DEAL").upper()
@@ -74,14 +78,18 @@ def check_bargain_gemini(title, price, year, url, details):
 
         except KeyboardInterrupt:
             raise
+        except requests.exceptions.ConnectionError:
+            logging.error(
+                f"Nie można połączyć się z Ollama ({OLLAMA_URL}). "
+                f"Upewnij się, że Ollama jest uruchomiona! (próba {attempt+1}/3)"
+            )
+            time.sleep(10)
+        except json.JSONDecodeError as e:
+            logging.error(f"Ollama zwróciła niepoprawny JSON (próba {attempt+1}/3): {e}")
+            logging.debug(f"Surowa odpowiedź: {text[:500]}")
+            time.sleep(5)
         except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "Resource" in error_str:
-                wait = 30 * (attempt + 1)
-                logging.warning(f"Limit Gemini API! Oczekiwanie {wait}s... (próba {attempt+1}/3)")
-                time.sleep(wait)
-            else:
-                logging.error(f"Błąd Gemini API (próba {attempt+1}/3): {e}")
-                time.sleep(5)
+            logging.error(f"Błąd Ollama (próba {attempt+1}/3): {e}")
+            time.sleep(5)
 
     return "NORMAL DEAL", "Nie udało się zweryfikować przez AI."

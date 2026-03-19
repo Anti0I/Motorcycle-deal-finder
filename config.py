@@ -1,7 +1,6 @@
 import os
 import logging
 from dotenv import load_dotenv
-from google import genai
 
 load_dotenv()
 
@@ -12,11 +11,10 @@ MONITORED_URLS = [
 
 # --- Klucze i webhooki ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- Klient Gemini ---
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-GEMINI_MODEL = "gemini-2.5-flash"
+# --- Ollama ---
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:12b")
 
 # --- Interwał sprawdzania (minuty) ---
 INTERWAL_SPRAWDZANIA_MIN = 3
