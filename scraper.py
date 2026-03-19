@@ -54,10 +54,39 @@ def extract_from_otomoto(page):
                         break
 
             year = "Nieznany rocznik"
-            labels_elem = article.locator('[data-testid="ad-labels"], [data-id="ad-labels"], .ad-labels').first
-            if labels_elem.count() > 0:
-                labels_text = labels_elem.inner_text().strip()
-                match = re.search(r'\b(19\d{2}|20[0-4]\d)\b', labels_text)
+
+            # Strategia 1: indywidualne elementy [data-testid="ad-label"] (liczba pojedyncza)
+            label_items = article.locator('[data-testid="ad-labels"]').all()
+            for item in label_items:
+                try:
+                    item_text = item.inner_text().strip()
+                    match = re.search(r'\b(19\d{2}|20[0-4]\d)\b', item_text)
+                    if match:
+                        year = match.group(1)
+                        break
+                except Exception:
+                    continue
+
+            # Strategia 2: kontener ad-labels (jeśli strategia 1 nie znalazła)
+            if year == "Nieznany rocznik":
+                labels_selectors = [
+                    '[data-testid="ad-labels"]',
+                    '[data-id="ad-labels"]',
+                    '.ad-labels',
+                    '[data-testid="listing-ad-labels"]',
+                ]
+                for sel in labels_selectors:
+                    labels_elem = article.locator(sel).first
+                    if labels_elem.count() > 0:
+                        labels_text = labels_elem.inner_text().strip()
+                        match = re.search(r'\b(19\d{2}|20[0-4]\d)\b', labels_text)
+                        if match:
+                            year = match.group(1)
+                            break
+
+            # Strategia 3: fallback - szukaj roku w tytule ogłoszenia
+            if year == "Nieznany rocznik":
+                match = re.search(r'\b(19\d{2}|20[0-4]\d)\b', title)
                 if match:
                     year = match.group(1)
 
@@ -81,7 +110,7 @@ def extract_from_otomoto(page):
 
 def extract_listing_details(context, url):
     """Otwiera stronę ogłoszenia i wyciąga szczegółowe parametry."""
-    details = {"description": "", "parameters": "", "highlights": ""}
+    details = {"description": "", "parameters": "", "highlights": "", "year": ""}
     if not url or not str(url).startswith('http'):
         return details
 
@@ -215,10 +244,30 @@ def extract_listing_details(context, url):
                     details['parameters'] = elem.inner_text().strip()
                     break
 
+        # --- Ekstrakcja rocznika ze strony szczegółowej ---
+        extracted_year = ""
+        # Szukaj w highlights i parametrach
+        for text_source in [details['highlights'], details['parameters']]:
+            if text_source:
+                year_match = re.search(r'(?:Rok produkcji|Rocznik)[:\s]*(19\d{2}|20[0-4]\d)', text_source)
+                if year_match:
+                    extracted_year = year_match.group(1)
+                    break
+        # Fallback: szukaj dowolnego roku w parametrach
+        if not extracted_year:
+            for text_source in [details['highlights'], details['parameters']]:
+                if text_source:
+                    year_match = re.search(r'\b(19\d{2}|20[0-4]\d)\b', text_source)
+                    if year_match:
+                        extracted_year = year_match.group(1)
+                        break
+        details['year'] = extracted_year
+
         logging.info(
             f"Pobrano szczegóły - Opis: {len(details['description'])} zn., "
             f"Highlights: {len(details['highlights'])} zn., "
-            f"Parametry: {len(details['parameters'])} zn."
+            f"Parametry: {len(details['parameters'])} zn., "
+            f"Rocznik: {details['year'] or 'nie znaleziono'}"
         )
 
     except KeyboardInterrupt:

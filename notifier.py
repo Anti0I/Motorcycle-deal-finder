@@ -10,7 +10,7 @@ def send_discord_notification(title, price, year, url, image_url, deal_type="NOR
 
     colors = {
         "GREAT DEAL": 0x2ECC71,
-        "BARGAIN": 0xF1C40F
+        "BARGAIN": 0xBF40BF
     }
 
     display_title = f"[{deal_type}] {title} ({year})"[:256]

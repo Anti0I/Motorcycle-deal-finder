@@ -50,6 +50,11 @@ def main():
                                 logging.info(f"Pobieranie szczegółów nowej oferty: {listing['title']} (Rocznik: {listing['year']})")
                                 details = extract_listing_details(context, listing['url'])
 
+                                # Aktualizuj rocznik z detali strony, jeśli nie znaleziono na liście
+                                if listing['year'] == "Nieznany rocznik" and details.get('year'):
+                                    listing['year'] = details['year']
+                                    logging.info(f"Rocznik uzupełniony ze strony szczegółowej: {listing['year']}")
+
                                 deal_type, analysis = check_bargain_gemini(
                                     listing['title'], listing['price'], listing['year'], listing['url'], details
                                 )
