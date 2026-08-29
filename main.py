@@ -5,7 +5,7 @@ from playwright.sync_api import sync_playwright
 
 from config import MONITORED_URLS, INTERWAL_SPRAWDZANIA_MIN, INTERWAL_SPRAWDZANIA_MAX
 from database import init_db, is_listing_new, save_listing
-from scraper import extract_from_otomoto, extract_listing_details
+from scraper import extract_from_otomoto, extract_listing_details, accept_cookies
 from analyzer import check_bargain_gemini
 from notifier import send_discord_notification
 
@@ -31,6 +31,7 @@ def main():
                 for target_url in MONITORED_URLS:
                     try:
                         page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                        accept_cookies(page)
                         time.sleep(2)
 
                         listings = extract_from_otomoto(page)

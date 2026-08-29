@@ -31,6 +31,9 @@ def send_discord_notification(title, price, year, url, image_url, deal_type="NOR
         "embeds": [embed]
     }
     try:
-        requests.post(WEBHOOK_URL, json=data)
+        # Bez timeoutu zawieszony Discord blokuje całego bota w nieskończoność.
+        resp = requests.post(WEBHOOK_URL, json=data, timeout=10)
+        if resp.status_code >= 300:
+            logging.error(f"Discord odrzucił powiadomienie ({resp.status_code}): {resp.text[:300]}")
     except Exception as e:
         logging.error(f"Błąd Discord: {e}")

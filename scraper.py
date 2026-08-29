@@ -2,6 +2,105 @@ import time
 import re
 import logging
 
+COOKIE_ACCEPT_SELECTORS = [
+    '#onetrust-accept-btn-handler',
+    'button:has-text("Akceptuję")',
+    'button:has-text("Akceptuje")',
+]
+
+COOKIE_BANNER_SELECTOR = '#onetrust-banner-sdk'
+
+# Akordeony na stronie oferty. Ich treść nie istnieje w DOM dopóki się ich nie
+# kliknie, a "Stan i historia" zawiera bezwypadkowość/uszkodzenia - czyli
+# dokładnie to, o co prompt pyta AI w punkcie "CZY JEST USZKODZONY".
+EXPAND_BUTTONS = [
+    "Pokaż pełny opis",
+    "Specyfikacja",
+    "Stan i historia",
+]
+
+# Zgoda na cookies zapisuje się w kontekście przeglądarki, więc baner pojawia
+# się realnie tylko raz. Flaga pozwala potem pomijać czekanie na niego.
+_consent_accepted = False
+
+
+def accept_cookies(page, wait_ms=6000):
+    """Zamyka baner zgody OneTrust i czeka aż zniknie.
+
+    Baner doczytuje się asynchronicznie, już po domcontentloaded. Dopóki wisi,
+    jego przezroczysta nakładka przechwytuje kliknięcia i KAŻDY click() na
+    stronie kończy się TimeoutError - to blokowało rozwijanie akordeonów.
+    """
+    global _consent_accepted
+
+    btn = None
+    if _consent_accepted:
+        selectors, effective_wait = COOKIE_ACCEPT_SELECTORS[:1], 1000
+    else:
+        selectors, effective_wait = COOKIE_ACCEPT_SELECTORS, wait_ms
+
+    for selector in selectors:
+        try:
+            if page.locator(selector).count() > 0 and page.locator(selector).first.is_visible():
+                btn = page.locator(selector).first
+                break
+            page.wait_for_selector(selector, state="visible", timeout=effective_wait)
+            btn = page.locator(selector).first
+            break
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            effective_wait = 800
+            continue
+
+    if btn is None:
+        return False
+
+    try:
+        btn.click(timeout=5000)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        logging.warning(f"Nie udało się kliknąć zgody na cookies: {e}")
+        return False
+
+    try:
+        page.wait_for_selector(COOKIE_BANNER_SELECTOR, state="hidden", timeout=5000)
+    except Exception:
+        pass
+
+    _consent_accepted = True
+    logging.info("Zaakceptowano baner cookies.")
+    return True
+
+
+def _expand_sections(page):
+    """Rozwija opis i akordeony ze szczegółami. Best-effort - brak przycisku
+    nie jest błędem."""
+    clicked = 0
+    for label in EXPAND_BUTTONS:
+        try:
+            btn = page.get_by_role("button", name=label, exact=False).first
+            if btn.count() == 0 or not btn.is_visible():
+                continue
+            try:
+                btn.click(timeout=3000)
+            except Exception:
+                # Zwykły click wymaga, żeby element był "actionable". Gdy coś go
+                # przykrywa, leci TimeoutError - el.click() z DOM omija przesłony.
+                btn.evaluate("el => el.click()")
+            clicked += 1
+            page.wait_for_timeout(400)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            logging.debug(f"Nie udało się rozwinąć sekcji {label!r}: {e}")
+            continue
+    if clicked:
+        # Treść akordeonu doczytuje się asynchronicznie po kliknięciu.
+        page.wait_for_timeout(900)
+    return clicked
+
 
 def extract_from_otomoto(page):
     """Pobiera listę ogłoszeń z bieżącej strony Otomoto."""
@@ -40,18 +139,19 @@ def extract_from_otomoto(page):
             url_elem = article.locator('a').first
             url = url_elem.get_attribute('href') if url_elem.count() > 0 else ""
 
+            # Kwota siedzi w <h3>, a waluta w OSOBNYM <p> obok. Szukanie "PLN"
+            # wewnątrz h3/span nigdy nie trafiało i zostawała goła liczba,
+            # przez co AI dostawało "35 000" bez informacji o walucie.
             price_text = "Nieznana cena"
-            for loc in [
-                article.locator("h3:has-text('PLN')").first,
-                article.locator("h3:has-text('EUR')").first,
-                article.locator("span:has-text('PLN')").first,
-                article.locator("h3").first,
-            ]:
-                if loc.count() > 0:
-                    p = loc.inner_text().strip()
-                    if p:
-                        price_text = p
-                        break
+            amount_elem = article.locator('h3').first
+            if amount_elem.count() > 0:
+                amount = amount_elem.inner_text().strip()
+                if amount:
+                    # article_text jest zlowercase'owane wyżej, więc szukamy
+                    # bez rozróżniania wielkości i normalizujemy z powrotem.
+                    currency_match = re.search(r'\b(pln|eur|usd)\b', article_text)
+                    currency = currency_match.group(1).upper() if currency_match else "PLN"
+                    price_text = f"{amount} {currency}"
 
             year = "Nieznany rocznik"
 
@@ -103,7 +203,9 @@ def extract_from_otomoto(page):
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            logging.debug(f"Błąd parsowania elementu Otomoto: {e}")
+            # debug przy poziomie INFO oznaczał, że awaria selektorów znikała
+            # z logów bez śladu.
+            logging.warning(f"Błąd parsowania elementu Otomoto: {e}")
 
     return listings
 
@@ -118,7 +220,11 @@ def extract_listing_details(context, url):
     try:
         page = context.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        accept_cookies(page)
         time.sleep(2)
+        # Bez tego sekcja "Stan i historia" zostaje zwinięta i dane
+        # o bezwypadkowości/uszkodzeniach nigdy nie trafiają do promptu.
+        _expand_sections(page)
 
         # --- 1. Opis ---
         desc_locators = [
